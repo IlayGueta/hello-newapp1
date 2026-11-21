@@ -3,21 +3,15 @@
 //   https://github.com/elevy99927-demos/gitops  ->  systems/<DEPARTMENT>/<ENV>/<user>.yaml
 // Argo CD (ApplicationSet/systems-manifests.yaml) deploys that file.
 
-properties([
-  parameters([
-    choice(name: 'ENV', choices: ['dev', 'qa', 'prd'], description: 'Environment folder: systems/<DEPARTMENT>/<ENV>/'),
-    string(name: 'DEPARTMENT', defaultValue: 'devops', description: 'Department folder: hr, finance, legal, digital, devops'),
-    booleanParam(name: 'SERVICE_MONITOR', defaultValue: false, description: 'Render the ServiceMonitor (needs the Prometheus Operator CRDs in the cluster)')
-  ])
-])
+
 
 def user        = "elevy99927"              // your name: Docker Hub user AND gitops file name
 def appname     = "helloworld"
 def appimage    = "${user}/${appname}"      // docker.io/<user>/helloworld
 def apptag      = "${env.BUILD_NUMBER}"
-def envName     = params.ENV ?: 'dev'
-def department  = params.DEPARTMENT ?: 'devops'
-def serviceMon  = params.SERVICE_MONITOR ? 'true' : 'false'
+def envName     = "dev"
+def department  = "devops"
+
 def gitopsRepo  = "github.com/elevy99927-demos/gitops.git"
 def gitopsFile  = "systems/${department}/${envName}/${user}.yaml"
 
@@ -85,7 +79,6 @@ podTemplate(containers: [
                     helm template ${user} "${env.WORKSPACE}/chart" \\
                         --set image.repository=${appimage} \\
                         --set image.tag=${apptag} \\
-                        --set serviceMonitor.enabled=${serviceMon} \\
                         > ${gitopsFile}
 
                     git add ${gitopsFile}
