@@ -38,7 +38,7 @@ podTemplate(containers: [
             container('docker') {
                 // wait for dockerd (started by the dind container) to accept connections
                 sh '''
-                    for i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done
+                    for i in $(seq 1 3); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done
                     echo "docker daemon did not start"; docker info; exit 1
                 '''
                 echo "Building ${appimage}:${apptag}"
@@ -88,14 +88,7 @@ podTemplate(containers: [
                     fi
                     git commit -m "Deploy ${appimage}:${apptag} to ${department}/${envName} (build ${env.BUILD_NUMBER})"
 
-                    # the whole class pushes to the same repo - rebase and retry on conflict
-                    for i in 1 2 3 4 5; do
-                        if git push origin HEAD:main; then exit 0; fi
-                        echo "push rejected, rebasing (attempt \$i)"
-                        git pull --rebase origin main
-                        sleep \$i
-                    done
-                    echo "push failed after 5 attempts"; exit 1
+                    git push origin HEAD:main
                 """
                 }
             }
