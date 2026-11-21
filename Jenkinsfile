@@ -1,4 +1,5 @@
-// GitOps flow: build the image, render the Helm chart, and commit the rendered manifests to
+// GitOps flow: build the image (docker-in-docker), push tags <BUILD_NUMBER> + latest,
+// render the Helm chart, and commit the rendered manifests to
 //   https://github.com/elevy99927-demos/gitops  ->  systems/<DEPARTMENT>/<ENV>/<user>.yaml
 // Argo CD (ApplicationSet/systems-manifests.yaml) deploys that file.
 
@@ -23,7 +24,10 @@ def gitopsFile  = "systems/${department}/${envName}/${user}.yaml"
 podTemplate(containers: [
       containerTemplate(name: 'jnlp', image: 'jenkins/inbound-agent', ttyEnabled: true),
       containerTemplate(name: 'deployer', image: 'elevy99927/k8s-deployer:latest', command: 'cat', ttyEnabled: true),
-      containerTemplate(name: 'docker', image: 'gcr.io/kaniko-project/executor:v1.23.0-debug', command: '/busybox/cat', ttyEnabled: true)
+      // docker-in-docker: this container runs dockerd; the sh steps below run the docker CLI in it
+      containerTemplate(name: 'docker', image: 'docker:27-dind', privileged: true,
+                        args: '--storage-driver=vfs',
+                        envVars: [envVar(key: 'DOCKER_TLS_CERTDIR', value: '')])   // no TLS inside the pod
   ])  {
     // Credentials come from Jenkins (Manage Jenkins -> Credentials), not from Kubernetes secrets:
     //   docker-cred  : Secret text            - Docker Hub access token for <user>
@@ -38,15 +42,26 @@ podTemplate(containers: [
 
         stage('build') {
             container('docker') {
-                echo "Building ${appimage}:${apptag} with Kaniko..."
+                // wait for dockerd (started by the dind container) to accept connections
+                sh '''
+                    for i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done
+                    echo "docker daemon did not start"; docker info; exit 1
+                '''
+                echo "Building ${appimage}:${apptag}"
+                sh "docker build -t ${appimage}:${apptag} -t ${appimage}:latest ${env.WORKSPACE}"
+            }
+        }
+
+        stage('push') {
+            container('docker') {
+                // TAGS: <BUILD_NUMBER> (immutable, deployed by GitOps) and latest
                 withCredentials([string(credentialsId: 'docker-cred', variable: 'DOCKER_TOKEN')]) {
-                    // Kaniko has no `docker login`: it reads /kaniko/.docker/config.json
-                    sh """#!/busybox/sh
+                    sh """
                         set -e
-                        mkdir -p /kaniko/.docker
-                        AUTH=\$(printf '%s:%s' '${user}' "\$DOCKER_TOKEN" | base64 | tr -d '\\n')
-                        printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}' "\$AUTH" > /kaniko/.docker/config.json
-                        /kaniko/executor --force --context=dir://${env.WORKSPACE} --destination=${appimage}:${apptag}
+                        echo "\$DOCKER_TOKEN" | docker login -u ${user} --password-stdin
+                        docker push ${appimage}:${apptag}
+                        docker push ${appimage}:latest
+                        docker logout
                     """
                 }
             }
@@ -66,7 +81,6 @@ podTemplate(containers: [
                     git config user.name  "Jenkins (${user})"
                     git config user.email "elevy99927-demos@users.noreply.github.com"
 
-                    mkdir -p systems/${department}/${envName}
                     helm template ${user} ${env.WORKSPACE}/chart \\
                         --set image.repository=${appimage} \\
                         --set image.tag=${apptag} \\
