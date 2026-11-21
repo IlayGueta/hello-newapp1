@@ -86,7 +86,7 @@ podTemplate(containers: [
                         echo "No changes in ${gitopsFile} - nothing to deploy"
                         exit 0
                     fi
-                    git commit -m "Deploy ${appimage}:${apptag} to ${department}/${envName} (build ${env.BUILD_NUMBER})"
+                    git commit -m "Deploy ${appimage}:${apptag} to ${department}/${envName} (build ${env.BUILD_NUMBER}) \n Commited by ${user}"
 
                     git push origin HEAD:main
                 """
