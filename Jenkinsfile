@@ -48,7 +48,8 @@ podTemplate(containers: [
                     echo "docker daemon did not start"; docker info; exit 1
                 '''
                 echo "Building ${appimage}:${apptag}"
-                sh "docker build -t ${appimage}:${apptag} -t ${appimage}:latest ${env.WORKSPACE}"
+                // quote the workspace: job names with spaces give paths with spaces
+                sh "docker build -t ${appimage}:${apptag} -t ${appimage}:latest \"${env.WORKSPACE}\""
             }
         }
 
@@ -81,7 +82,7 @@ podTemplate(containers: [
                     git config user.name  "Jenkins (${user})"
                     git config user.email "elevy99927-demos@users.noreply.github.com"
 
-                    helm template ${user} ${env.WORKSPACE}/chart \\
+                    helm template ${user} "${env.WORKSPACE}/chart" \\
                         --set image.repository=${appimage} \\
                         --set image.tag=${apptag} \\
                         --set serviceMonitor.enabled=${serviceMon} \\
