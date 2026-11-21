@@ -24,11 +24,10 @@ podTemplate(containers: [
       containerTemplate(name: 'jnlp', image: 'jenkins/inbound-agent', ttyEnabled: true),
       containerTemplate(name: 'deployer', image: 'elevy99927/k8s-deployer:latest', command: 'cat', ttyEnabled: true),
       containerTemplate(name: 'docker', image: 'gcr.io/kaniko-project/executor:v1.23.0-debug', command: '/busybox/cat', ttyEnabled: true)
-  ],
-  volumes: [
-     secretVolume(mountPath: '/kaniko/.docker/', secretName: 'docker-cred'),               // Docker Hub login for <user>
-     secretVolume(mountPath: '/var/run/secrets/github-token', secretName: 'github-token')  // GitHub token with write access to elevy99927-demos/gitops
   ])  {
+    // Credentials come from Jenkins (Manage Jenkins -> Credentials), not from Kubernetes secrets:
+    //   docker-cred  : Secret text            - Docker Hub access token for <user>
+    //   github-token : Username with password - elevy99927-demos + GitHub token (write access to gitops)
     node(POD_LABEL) {
         stage('checkout') {
             container('jnlp') {
@@ -40,20 +39,29 @@ podTemplate(containers: [
         stage('build') {
             container('docker') {
                 echo "Building ${appimage}:${apptag} with Kaniko..."
-                sh "/kaniko/executor --force --context=dir://${env.WORKSPACE} --destination=${appimage}:${apptag}"
+                withCredentials([string(credentialsId: 'docker-cred', variable: 'DOCKER_TOKEN')]) {
+                    // Kaniko has no `docker login`: it reads /kaniko/.docker/config.json
+                    sh """#!/busybox/sh
+                        set -e
+                        mkdir -p /kaniko/.docker
+                        AUTH=\$(printf '%s:%s' '${user}' "\$DOCKER_TOKEN" | base64 | tr -d '\\n')
+                        printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}' "\$AUTH" > /kaniko/.docker/config.json
+                        /kaniko/executor --force --context=dir://${env.WORKSPACE} --destination=${appimage}:${apptag}
+                    """
+                }
             }
         }
 
         stage('deploy') {
             container('deployer') {
                 echo "Rendering chart into ${gitopsRepo} -> ${gitopsFile}"
+                withCredentials([usernamePassword(credentialsId: 'github-token', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
                 sh """#!/bin/sh
                     set -e
                     command -v git >/dev/null || apk add --no-cache git
-                    GIT_TOKEN=\$(cat /var/run/secrets/github-token/token)
 
                     rm -rf gitops
-                    git clone https://x-access-token:\${GIT_TOKEN}@${gitopsRepo} gitops
+                    git clone https://\${GIT_USER}:\${GIT_TOKEN}@${gitopsRepo} gitops
                     cd gitops
                     git config user.name  "Jenkins (${user})"
                     git config user.email "elevy99927-demos@users.noreply.github.com"
@@ -81,6 +89,7 @@ podTemplate(containers: [
                     done
                     echo "push failed after 5 attempts"; exit 1
                 """
+                }
             }
         }
 
