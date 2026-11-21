@@ -1,10 +1,24 @@
-def branch = env.BRANCH_NAME
-def build = env.BUILD_NUMBER
-def appname = "helloworld"
-def artifactory = "docker.io" 
-def repo = "elevy99927" 
-def appimage = "${repo}/${appname}"
-def apptag = "${build}"
+// GitOps flow: build the image, render the Helm chart, and commit the rendered manifests to
+//   https://github.com/elevy99927-demos/gitops  ->  systems/<DEPARTMENT>/<ENV>/<user>.yaml
+// Argo CD (ApplicationSet/systems-manifests.yaml) deploys that file.
+
+properties([
+  parameters([
+    choice(name: 'ENV', choices: ['dev', 'qa', 'prd'], description: 'Environment folder: systems/<DEPARTMENT>/<ENV>/'),
+    string(name: 'DEPARTMENT', defaultValue: 'devops', description: 'Department folder: hr, finance, legal, digital, devops'),
+    booleanParam(name: 'SERVICE_MONITOR', defaultValue: false, description: 'Render the ServiceMonitor (needs the Prometheus Operator CRDs in the cluster)')
+  ])
+])
+
+def user        = "elevy99927"              // your name: Docker Hub user AND gitops file name
+def appname     = "helloworld"
+def appimage    = "${user}/${appname}"      // docker.io/<user>/helloworld
+def apptag      = "${env.BUILD_NUMBER}"
+def envName     = params.ENV ?: 'dev'
+def department  = params.DEPARTMENT ?: 'devops'
+def serviceMon  = params.SERVICE_MONITOR ? 'true' : 'false'
+def gitopsRepo  = "github.com/elevy99927-demos/gitops.git"
+def gitopsFile  = "systems/${department}/${envName}/${user}.yaml"
 
 podTemplate(containers: [
       containerTemplate(name: 'jnlp', image: 'jenkins/inbound-agent', ttyEnabled: true),
@@ -12,9 +26,8 @@ podTemplate(containers: [
       containerTemplate(name: 'docker', image: 'gcr.io/kaniko-project/executor:v1.23.0-debug', command: '/busybox/cat', ttyEnabled: true)
   ],
   volumes: [
-     secretVolume(mountPath: '/kaniko/.docker/', secretName: 'docker-cred'),
-     secretVolume(mountPath: '/var/run/secrets/github-token', secretName: 'github-token')
-
+     secretVolume(mountPath: '/kaniko/.docker/', secretName: 'docker-cred'),               // Docker Hub login for <user>
+     secretVolume(mountPath: '/var/run/secrets/github-token', secretName: 'github-token')  // GitHub token with write access to elevy99927-demos/gitops
   ])  {
     node(POD_LABEL) {
         stage('checkout') {
@@ -23,77 +36,60 @@ podTemplate(containers: [
                 checkout scm
             }
         }
-        // stage('calc-version') {
-        //     container('deployer') {
-        //         script {
-        //             def currentVersion = sh(
-        //                 script: """#!/bin/bash
-        //                     TOKEN=\$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${appimage}:pull" | jq -r .token)
-        //                     DIGEST=\$(curl -s -H "Authorization: Bearer \$TOKEN" -H "Accept: application/vnd.docker.distribution.manifest.v2+json" "https://registry-1.docker.io/v2/${appimage}/manifests/latest" | jq -r '.config.digest // empty')
-        //                     if [ -z "\$DIGEST" ]; then
-        //                         echo "1"
-        //                     else
-        //                         CURRENT=\$(curl -s -H "Authorization: Bearer \$TOKEN" -H "Accept: application/vnd.docker.container.image.v1+json" "https://registry-1.docker.io/v2/${appimage}/blobs/\$DIGEST" | jq -r '.config.Labels.VERSION // empty')
-        //                         if [ -z "\$CURRENT" ]; then
-        //                             echo "1"
-        //                         else
-        //                             echo \$((\$CURRENT + 1))
-        //                         fi
-        //                     fi
-        //                 """,
-        //                 returnStdout: true
-        //             ).trim()
-        //             env.VERSION = currentVersion
-        //         }
-        //         echo "Next VERSION: ${env.VERSION}"
-        //     }
-        // }
 
         stage('build') {
             container('docker') {
-                echo "Building docker image with Kaniko..."
+                echo "Building ${appimage}:${apptag} with Kaniko..."
                 sh "/kaniko/executor --force --context=dir://${env.WORKSPACE} --destination=${appimage}:${apptag}"
             }
         }
+
         stage('deploy') {
             container('deployer') {
-                sh """
-                    apk add --no-cache git
+                echo "Rendering chart into ${gitopsRepo} -> ${gitopsFile}"
+                sh """#!/bin/sh
+                    set -e
+                    command -v git >/dev/null || apk add --no-cache git
                     GIT_TOKEN=\$(cat /var/run/secrets/github-token/token)
-                    git clone https://\${GIT_TOKEN}@github.com/elevy99927/argo-demo-repo.git
-                    cd argo-demo-repo
-                    git checkout application
 
-                    helm template hello-newapp ${env.WORKSPACE}/chart \
-                        --set image.repository=${appimage} \
-                        --set image.tag=${apptag} \
-                        > app-1/k8s-qa/hello-newapp.yaml
+                    rm -rf gitops
+                    git clone https://x-access-token:\${GIT_TOKEN}@${gitopsRepo} gitops
+                    cd gitops
+                    git config user.name  "Jenkins (${user})"
+                    git config user.email "elevy99927-demos@users.noreply.github.com"
 
-                    git config user.email "eyal@levys.co.il"
-                    git config user.name "Jenkins with Argo"
-                    git add app-1/k8s-qa/hello-newapp.yaml
-                    git commit -m "Deploy ${appname}:${apptag}"
-                    git remote set-url origin https://\${GIT_TOKEN}@github.com/elevy99927/argo-demo-repo.git
-                    git push origin application
+                    mkdir -p systems/${department}/${envName}
+                    helm template ${user} ${env.WORKSPACE}/chart \\
+                        --set image.repository=${appimage} \\
+                        --set image.tag=${apptag} \\
+                        --set serviceMonitor.enabled=${serviceMon} \\
+                        > ${gitopsFile}
+
+                    git add ${gitopsFile}
+                    if git diff --cached --quiet; then
+                        echo "No changes in ${gitopsFile} - nothing to deploy"
+                        exit 0
+                    fi
+                    git commit -m "Deploy ${appimage}:${apptag} to ${department}/${envName} (build ${env.BUILD_NUMBER})"
+
+                    # the whole class pushes to the same repo - rebase and retry on conflict
+                    for i in 1 2 3 4 5; do
+                        if git push origin HEAD:main; then exit 0; fi
+                        echo "push rejected, rebasing (attempt \$i)"
+                        git pull --rebase origin main
+                        sleep \$i
+                    done
+                    echo "push failed after 5 attempts"; exit 1
                 """
             }
         }
+
         stage('add-dashboard') {
             container('deployer') {
                 sh """
-                    GIT_TOKEN=\$(cat /var/run/secrets/github-token/token)
-                    cd argo-demo-repo
-                    git pull origin application
-
-                    mkdir -p grafana-dashboards
-                    cp ${env.WORKSPACE}/grafana-dashboard.json grafana-dashboards/${appname}.json
-
-                    git add grafana-dashboards/${appname}.json
-                    git commit -m "Update Grafana dashboard for ${appname}" || echo "No dashboard changes to commit"
-                    git push origin application
+                    echo " TBD: Add dashboard to grafana"
                 """
             }
         }
     }
-
   }
