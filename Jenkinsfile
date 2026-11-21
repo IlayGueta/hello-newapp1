@@ -30,7 +30,7 @@ podTemplate(containers: [
                         envVars: [envVar(key: 'DOCKER_TLS_CERTDIR', value: '')])   // no TLS inside the pod
   ])  {
     // Credentials come from Jenkins (Manage Jenkins -> Credentials), not from Kubernetes secrets:
-    //   docker-cred  : Secret text            - Docker Hub access token for <user>
+    //   docker-cred  : Username with password - <user> + Docker Hub access token
     //   github-token : Username with password - elevy99927-demos + GitHub token (write access to gitops)
     node(POD_LABEL) {
         stage('checkout') {
@@ -56,10 +56,10 @@ podTemplate(containers: [
         stage('push') {
             container('docker') {
                 // TAGS: <BUILD_NUMBER> (immutable, deployed by GitOps) and latest
-                withCredentials([string(credentialsId: 'docker-cred', variable: 'DOCKER_TOKEN')]) {
+                withCredentials([usernamePassword(credentialsId: 'docker-cred', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_TOKEN')]) {
                     sh """
                         set -e
-                        echo "\$DOCKER_TOKEN" | docker login -u ${user} --password-stdin
+                        echo "\$DOCKER_TOKEN" | docker login -u "\$DOCKER_USER" --password-stdin
                         docker push ${appimage}:${apptag}
                         docker push ${appimage}:latest
                         docker logout
