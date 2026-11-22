@@ -5,7 +5,7 @@
 
 
 
-def user        = "ilagueta"              // your name: Docker Hub user AND gitops file name
+def user        = "ilaygueta"              // your name: Docker Hub user AND gitops file name
 def appname     = "ledgersync"
 def appimage    = "${user}/${appname}"      // docker.io/<user>/helloworld
 def apptag      = "${env.BUILD_NUMBER}"
