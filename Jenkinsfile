@@ -5,12 +5,12 @@
 
 
 
-def user        = "elevy99927"              // your name: Docker Hub user AND gitops file name
-def appname     = "helloworld"
+def user        = "ilagueta"              // your name: Docker Hub user AND gitops file name
+def appname     = "ledgersync"
 def appimage    = "${user}/${appname}"      // docker.io/<user>/helloworld
 def apptag      = "${env.BUILD_NUMBER}"
 def envName     = "dev"
-def department  = "devops"
+def department  = "finance"
 
 def gitopsRepo  = "github.com/elevy99927-demos/gitops.git"
 def gitopsFile  = "systems/${department}/${envName}/${user}.yaml"
@@ -38,7 +38,7 @@ podTemplate(containers: [
             container('docker') {
                 // wait for dockerd (started by the dind container) to accept connections
                 sh '''
-                    for i in $(seq 1 3); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done
+                    for i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 2; done
                     echo "docker daemon did not start"; docker info; exit 1
                 '''
                 echo "Building ${appimage}:${apptag}"
@@ -76,7 +76,7 @@ podTemplate(containers: [
                     git config user.name  "Jenkins (${user})"
                     git config user.email "elevy99927-demos@users.noreply.github.com"
 
-                    helm template ${user} "${env.WORKSPACE}/chart" \\
+                    helm template ${appname} "${env.WORKSPACE}/chart" \\
                         --set image.repository=${appimage} \\
                         --set image.tag=${apptag} \\
                         > ${gitopsFile}
